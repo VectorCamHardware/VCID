@@ -213,6 +213,14 @@
   </div>
   <div class="controls-row">
     <div class="field">
+      <label for="prefix">Prefix</label>
+      <select id="prefix">
+        <option value="VC">VectorCam (VC)</option>
+        <option value="VT">VectorTrap (VT)</option>
+        <option value="VP">Phone (VP)</option>
+      </select>
+    </div>
+    <div class="field">
       <label for="mfr">Manufacturer</label>
       <select id="mfr">
         <option value="JHU">Johns Hopkins (JHU)</option>
@@ -352,6 +360,7 @@ let currentBatch = null; // { s, list } for the IDs shown in the preview
 // Reads and checks the batch fields. Returns the settings and a list of problems.
 function readBatch() {
   const problems = [];
+  const prefix = $('prefix').value;
   let mfr = $('mfr').value;
   const custom = mfr === '__other';
   $('mfrCustomField').hidden = !custom;
@@ -393,7 +402,7 @@ function readBatch() {
   $('start').classList.toggle('missing', badStart);
   $('qty').classList.toggle('missing', badQty);
 
-  return { s: { mfr, yy, mm, model, start, qty }, problems };
+  return { s: { prefix, mfr, yy, mm, model, start, qty }, problems };
 }
 
 function buildIds(s) {
@@ -403,8 +412,8 @@ function buildIds(s) {
     const body = pad(s.yy, 2) + pad(s.mm, 2) + pad(s.model, 3) + pad(unit, 4);
     const check = damm(body);
     list.push({
-      vcid: `VC${s.mfr}${body}${check}`,
-      mfr: s.mfr, yy: pad(s.yy, 2), mm: pad(s.mm, 2),
+      vcid: `${s.prefix}${s.mfr}${body}${check}`,
+      prefix: s.prefix, mfr: s.mfr, yy: pad(s.yy, 2), mm: pad(s.mm, 2),
       model: pad(s.model, 3), unit: pad(unit, 4), check,
     });
   }
@@ -459,13 +468,13 @@ function update() {
 function renderPreview(list, s) {
   const SHOW = 500;
   let html = '<div class="sheet"><table><thead><tr>' +
-    '<th>#</th><th>VCID</th><th>Manufacturer</th><th>Year</th><th>Month</th><th>Model No</th><th>Unit No</th><th>Check digit</th>' +
+    '<th>#</th><th>VCID</th><th>Prefix</th><th>Manufacturer</th><th>Year</th><th>Month</th><th>Model No</th><th>Unit No</th><th>Check digit</th>' +
     '</tr></thead><tbody>';
   list.slice(0, SHOW).forEach((r, i) => {
-    html += `<tr><td>${i + 1}</td><td class="code">${r.vcid}</td><td>${r.mfr}</td><td>${r.yy}</td><td>${r.mm}</td><td>${r.model}</td><td>${r.unit}</td><td>${r.check}</td></tr>`;
+    html += `<tr><td>${i + 1}</td><td class="code">${r.vcid}</td><td>${r.prefix}</td><td>${r.mfr}</td><td>${r.yy}</td><td>${r.mm}</td><td>${r.model}</td><td>${r.unit}</td><td>${r.check}</td></tr>`;
   });
   html += '</tbody></table>';
-  html += `<div class="sheet-footer">${escapeHtml(s.mfr)} &nbsp;&middot;&nbsp; ${MONTHS[s.mm - 1]} 20${pad(s.yy, 2)} &nbsp;&middot;&nbsp; Model ${pad(s.model, 3)}`;
+  html += `<div class="sheet-footer">${PREFIXES[s.prefix]} &nbsp;&middot;&nbsp; ${escapeHtml(s.mfr)} &nbsp;&middot;&nbsp; ${MONTHS[s.mm - 1]} 20${pad(s.yy, 2)} &nbsp;&middot;&nbsp; Model ${pad(s.model, 3)}`;
   if (list.length > SHOW) html += ` &nbsp;&middot;&nbsp; The first ${SHOW} IDs are shown; the Excel file contains all IDs`;
   html += '</div></div>';
   $('preview-wrap').innerHTML = html;
@@ -556,21 +565,24 @@ $('btn-copy').addEventListener('click', () => {
   } catch (err) { fail(); }
 });
 
+// Device type for each ID prefix
+const PREFIXES = { VC: 'VectorCam', VT: 'VectorTrap', VP: 'Phone' };
+
 // ── Validation of an existing VCID ──
 function verify() {
   const raw = $('vin').value.trim().toUpperCase().replace(/[\s-]/g, '');
   const out = $('verify-result');
   if (!raw) { out.textContent = ''; out.className = 'verify-result'; return; }
-  const m = /^VC([A-Z]{3})(\d{12})$/.exec(raw);
+  const m = /^(VC|VT|VP)([A-Z]{3})(\d{12})$/.exec(raw);
   if (!m) {
-    out.textContent = `Invalid format. A VCID is VC, 3 letters and 12 digits (17 characters); ${raw.length} characters were entered.`;
+    out.textContent = `Invalid format. A VCID is a prefix (VC, VT or VP), 3 letters and 12 digits (17 characters); ${raw.length} characters were entered.`;
     out.className = 'verify-result error';
     return;
   }
-  const d = m[2];
+  const d = m[3];
   if (damm(d) === 0) {
     const month = MONTHS[parseInt(d.slice(2, 4), 10) - 1] || `month ${d.slice(2, 4)}`;
-    out.textContent = `Valid. Manufacturer ${m[1]}, ${month} 20${d.slice(0, 2)}, model ${d.slice(4, 7)}, unit ${d.slice(7, 11)}.`;
+    out.textContent = `Valid. ${PREFIXES[m[1]]}, manufacturer ${m[2]}, ${month} 20${d.slice(0, 2)}, model ${d.slice(4, 7)}, unit ${d.slice(7, 11)}.`;
     out.className = 'verify-result ok';
   } else {
     out.textContent = `Invalid check digit. The check digit for this ID is ${damm(d.slice(0, 11))}; ${d[11]} was entered.`;
