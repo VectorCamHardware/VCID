@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>VCID Generator</title>
+<style>
+  /* Layout: matches the ID Printer (VectorCamHardware/IDPrinter) — title, rows of three fields, actions, status, hints, gray preview well. */
+  :root { color-scheme: light; }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: system-ui, sans-serif;
+    font-size: 14px;
+    background: #f5f5f5;
+    color: #111;
+    padding-block: 1.5rem;
+    padding-left: max(1.5rem, env(safe-area-inset-left, 0px));
+    padding-right: max(1.5rem, env(safe-area-inset-right, 0px));
+  }
+  @media (max-width: 560px) {
+    body {
+      padding-left: max(16px, env(safe-area-inset-left, 0px));
+      padding-right: max(16px, env(safe-area-inset-right, 0px));
+    }
+  }
+
+  .page-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 1.25rem;
+  }
+  h1 { font-size: 18px; font-weight: 500; }
+  .repo-link { font-size: 13px; color: #444; text-decoration: none; white-space: nowrap; }
+  .repo-link:hover { color: #111; text-decoration: underline; }
+  .repo-link:focus-visible { outline: 2px solid #4a90e2; outline-offset: 1px; }
+  h2 { font-size: 14px; font-weight: 500; margin: 1.5rem 0 0.75rem; }
+
+  .controls { display: flex; flex-direction: column; gap: 10px; margin-bottom: 1rem; }
+
+  /* Each row holds up to three fields in fixed-width columns */
+  .controls-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(155px, 220px));
+    gap: 10px;
+  }
+  @media (max-width: 560px) {
+    .controls-row { grid-template-columns: 1fr; }
+  }
+
+  .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .field label {
+    font-size: 11px;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .field label .range { font-size: 10px; color: #aaa; text-transform: none; letter-spacing: 0; }
+
+  .field input,
+  .field select {
+    padding: 6px 8px;
+    font-size: 13px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    background: #fff;
+    color: #111;
+    width: 100%;
+    font-family: inherit;
+  }
+  .field input:focus,
+  .field select:focus { outline: 2px solid #4a90e2; outline-offset: 1px; }
+  .field input.missing { border-color: #d9534f; }
+  .required { color: #d9534f; }
+
+  .actions { display: flex; gap: 8px; margin-bottom: 1rem; flex-wrap: wrap; }
+
+  button {
+    padding: 7px 18px;
+    font-size: 13px;
+    font-family: inherit;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    background: #fff;
+    color: #111;
+    cursor: pointer;
+  }
+  button:hover { background: #f0f0f0; }
+  button:focus-visible { outline: 2px solid #4a90e2; outline-offset: 1px; }
+  button.primary { background: #111; color: #fff; border-color: transparent; }
+  button.primary:hover { background: #333; }
+  button:disabled,
+  button:disabled:hover { background: #e6e6e6; color: #999; border-color: #ddd; cursor: not-allowed; }
+
+  .log-status { font-size: 12px; color: #444; margin-bottom: 1rem; min-height: 1em; }
+  .log-status.error { color: #b52b27; }
+  .log-status.ok { color: #2b6e2f; }
+
+  .hint { font-size: 12px; color: #888; margin-bottom: 1rem; max-width: 70ch; }
+
+  textarea.fallback {
+    display: block; width: 100%; max-width: 680px; min-height: 120px; margin-bottom: 1rem;
+    padding: 6px 8px; font: 12px ui-monospace, Menlo, Consolas, monospace;
+    border: 1px solid #ccc; border-radius: 6px; background: #fff; color: #111;
+  }
+
+  /* Preview is grayed out and locked until a name is entered */
+  .preview-outer { position: relative; }
+  body:not(.ready) .preview-wrap {
+    filter: grayscale(100%);
+    opacity: 0.35;
+    pointer-events: none;
+    user-select: none;
+  }
+  .locked-notice {
+    display: none;
+    position: absolute;
+    top: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #fff;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-size: 13px;
+    color: #444;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+    z-index: 2;
+    max-width: calc(100% - 32px);
+    text-align: center;
+  }
+  body:not(.ready) .locked-notice { display: block; }
+
+  .preview-wrap {
+    overflow: auto;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: #e0e0e0;
+    padding: 16px;
+    max-height: 620px;
+  }
+
+  /* The ID list is a white card in the preview */
+  .sheet {
+    background: #fff;
+    display: inline-block;
+    min-width: 100%;
+    padding: 10px 14px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.15);
+  }
+  table { border-collapse: collapse; }
+  th, td {
+    padding: 4px 14px 4px 0;
+    text-align: left;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  th {
+    font-size: 11px;
+    font-weight: 400;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid #222;
+  }
+  td { font-size: 13px; border-bottom: 1px solid #e6e6e6; }
+  td.code { font-weight: 600; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  tr:last-child td { border-bottom: none; }
+  .sheet-footer { margin-top: 8px; font-size: 11px; color: #bbb; text-align: right; }
+
+  .verify-result { font-size: 12px; margin-top: 6px; min-height: 1em; color: #444; }
+  .verify-result.error { color: #b52b27; }
+  .verify-result.ok { color: #2b6e2f; }
+</style>
+</head>
+<body>
+<div class="page-head">
+  <h1>VCID Generator</h1>
+  <a class="repo-link" href="https://github.com/VectorCamHardware/VCID" target="_blank" rel="noopener">Repository ↗</a>
+</div>
+
+<div class="controls">
+  <div class="controls-row">
+    <div class="field">
+      <label for="opname">Name <span class="required">*</span></label>
+      <input type="text" id="opname" maxlength="60" autocomplete="name" placeholder="Full name">
+    </div>
+  </div>
+  <div class="controls-row">
+    <div class="field">
+      <label for="mfr">Manufacturer</label>
+      <select id="mfr">
+        <option value="JHU">Johns Hopkins (JHU)</option>
+        <option value="__other">Other</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="yr">Year</label>
+      <select id="yr"></select>
+    </div>
+    <div class="field">
+      <label for="mo">Month</label>
+      <select id="mo"></select>
+    </div>
+  </div>
+  <div class="controls-row" id="mfrCustomRow" hidden>
+    <div class="field">
+      <label for="mfrCustom">Manufacturer code <span class="range">(3 letters)</span></label>
+      <input type="text" id="mfrCustom" maxlength="3" autocomplete="off" placeholder="ABC">
+    </div>
+  </div>
+  <div class="controls-row">
+    <div class="field">
+      <label for="model">Model number <span class="range">(1–999)</span></label>
+      <input type="number" id="model" value="1" min="1" max="999">
+    </div>
+    <div class="field">
+      <label for="start">Start unit number <span class="range">(1–9999)</span></label>
+      <input type="number" id="start" value="1" min="1" max="9999">
+    </div>
+    <div class="field">
+      <label for="qty">Unit quantity</label>
+      <input type="number" id="qty" value="25" min="1" max="9999">
+    </div>
+  </div>
+</div>
+
+<div class="actions">
+  <button id="btn-download" class="primary" type="button" disabled>Download CSV</button>
+  <button id="btn-copy" type="button" disabled>Copy CSV</button>
+</div>
+
+<p class="log-status" id="log-status" role="status" aria-live="polite"></p>
+<textarea class="fallback" id="fallback" readonly hidden aria-label="CSV text"></textarea>
+
+<p class="hint">
+  Name is required before the CSV can be downloaded or copied.
+</p>
+
+<div class="preview-outer">
+  <div class="locked-notice" id="locked-notice">Enter a name to enable the preview.</div>
+  <div class="preview-wrap" id="preview-wrap"></div>
+</div>
+
+<h2>Validate a VCID</h2>
+<div class="controls">
+  <div class="controls-row">
+    <div class="field">
+      <label for="vin">VCID</label>
+      <input type="text" id="vin" maxlength="24" autocomplete="off" placeholder="VCJHU261000100019" style="text-transform:uppercase">
+    </div>
+  </div>
+</div>
+<p class="verify-result" id="verify-result" role="status"></p>
+
+<script>
+// Damm algorithm operation table (weakly totally anti-symmetric quasigroup of order 10)
+const DAMM = [
+  [0,3,1,7,5,9,8,6,4,2],[7,0,9,2,1,5,4,8,6,3],[4,2,0,6,8,7,1,3,5,9],
+  [1,7,5,0,9,8,3,4,2,6],[6,1,2,3,0,4,5,9,7,8],[3,6,7,4,2,0,9,5,8,1],
+  [5,8,6,9,7,2,0,1,3,4],[8,9,4,5,3,6,2,0,1,7],[9,4,3,8,6,1,7,2,0,5],
+  [2,5,8,1,4,3,6,7,9,0],
+];
+function damm(digits) {
+  let i = 0;
+  for (const ch of digits) i = DAMM[i][ch.charCodeAt(0) - 48];
+  return i;
+}
+
+function pad(n, digits) {
+  return String(n).padStart(digits, '0');
+}
+
+function escapeHtml(str) {
+  return str.replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[ch]);
+}
+
+// CSV fields are quoted when they contain a comma, quote or line break.
+function csvField(v) {
+  const s = String(v);
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+const $ = id => document.getElementById(id);
+const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+
+// Year and month default to the current date
+const now = new Date();
+const thisYear = now.getFullYear();
+for (let y = thisYear - 2; y <= thisYear + 5; y++) {
+  const opt = new Option(`${y} (${pad(y % 100, 2)})`, y % 100);
+  if (y === thisYear) opt.selected = true;
+  $('yr').add(opt);
+}
+MONTHS.forEach((m, i) => {
+  const opt = new Option(`${m} (${pad(i + 1, 2)})`, i + 1);
+  if (i === now.getMonth()) opt.selected = true;
+  $('mo').add(opt);
+});
+
+// ── Required operator field (name) ──
+const nameEl = $('opname');
+
+function operatorInfo() {
+  return { name: nameEl.value.trim() };
+}
+
+function setStatus(message, kind) {
+  const el = $('log-status');
+  el.textContent = message || '';
+  el.className = 'log-status' + (kind ? ' ' + kind : '');
+}
+
+let currentBatch = null; // { s, list } for the IDs shown in the preview
+
+// Reads and checks the batch fields. Returns the settings and a list of problems.
+function readBatch() {
+  const problems = [];
+  let mfr = $('mfr').value;
+  const custom = mfr === '__other';
+  $('mfrCustomRow').hidden = !custom;
+  const mfrEl = $('mfrCustom');
+  if (custom) {
+    mfr = mfrEl.value.toUpperCase().replace(/[^A-Z]/g, '');
+    if (mfrEl.value !== mfr) mfrEl.value = mfr;
+    if (mfr.length !== 3) problems.push('The manufacturer code must be 3 letters (A–Z).');
+  }
+  mfrEl.classList.toggle('missing', custom && mfr.length !== 3);
+
+  const yy = parseInt($('yr').value, 10);
+  const mm = parseInt($('mo').value, 10);
+  const model = Number($('model').value);
+  const start = Number($('start').value);
+  const qty = Number($('qty').value);
+
+  const badModel = !Number.isInteger(model) || model < 1 || model > 999;
+  const badStart = !Number.isInteger(start) || start < 1 || start > 9999;
+  const badQty = !badStart && (!Number.isInteger(qty) || qty < 1 || start + qty - 1 > 9999);
+  if (badModel) problems.push('The model number must be a whole number from 1 to 999.');
+  if (badStart) problems.push('The start unit number must be a whole number from 1 to 9999.');
+  else if (badQty) {
+    problems.push(qty >= 1 && Number.isInteger(qty)
+      ? `The unit quantity exceeds the available range. At most ${9999 - start + 1} units can follow unit ${pad(start, 4)}.`
+      : 'The unit quantity must be a whole number of at least 1.');
+  }
+  $('model').classList.toggle('missing', badModel);
+  $('start').classList.toggle('missing', badStart);
+  $('qty').classList.toggle('missing', badQty);
+
+  return { s: { mfr, yy, mm, model, start, qty }, problems };
+}
+
+function buildIds(s) {
+  const list = [];
+  for (let k = 0; k < s.qty; k++) {
+    const unit = s.start + k;
+    const body = pad(s.yy, 2) + pad(s.mm, 2) + pad(s.model, 3) + pad(unit, 4);
+    const check = damm(body);
+    list.push({
+      vcid: `VC${s.mfr}${body}${check}`,
+      mfr: s.mfr, yy: pad(s.yy, 2), mm: pad(s.mm, 2),
+      model: pad(s.model, 3), unit: pad(unit, 4), check,
+    });
+  }
+  return list;
+}
+
+function buildCsv(list, op) {
+  const header = ['VCID', 'Manufacturer', 'Year', 'Month', 'Model No', 'Unit No', 'Check Digit', 'Name'];
+  const rows = list.map(r => [r.vcid, r.mfr, r.yy, r.mm, r.model, r.unit, r.check, op.name].map(csvField).join(','));
+  return header.join(',') + '\r\n' + rows.join('\r\n') + '\r\n';
+}
+
+function fileName() {
+  const { s, list } = currentBatch;
+  return `${list[0].vcid}-${list[list.length - 1].vcid}.csv`;
+}
+
+// Enables or disables the buttons and the preview according to the required fields and the batch.
+function update() {
+  const op = operatorInfo();
+  const ready = op.name.length > 0;
+  document.body.classList.toggle('ready', ready);
+  nameEl.classList.toggle('missing', !op.name);
+  $('fallback').hidden = true;
+
+  const { s, problems } = readBatch();
+  if (problems.length) {
+    currentBatch = null;
+    $('btn-download').disabled = $('btn-copy').disabled = true;
+    $('preview-wrap').innerHTML = '';
+    setStatus(problems.join(' '), 'error');
+    return;
+  }
+
+  const list = buildIds(s);
+  currentBatch = { s, list };
+  $('btn-download').disabled = $('btn-copy').disabled = !ready;
+  setStatus(`IDs: ${list[0].vcid} – ${list[list.length - 1].vcid}`);
+  renderPreview(list, s);
+}
+
+function renderPreview(list, s) {
+  const SHOW = 500;
+  let html = '<div class="sheet"><table><thead><tr>' +
+    '<th>#</th><th>VCID</th><th>Manufacturer</th><th>Year</th><th>Month</th><th>Model No</th><th>Unit No</th><th>Check digit</th>' +
+    '</tr></thead><tbody>';
+  list.slice(0, SHOW).forEach((r, i) => {
+    html += `<tr><td>${i + 1}</td><td class="code">${r.vcid}</td><td>${r.mfr}</td><td>${r.yy}</td><td>${r.mm}</td><td>${r.model}</td><td>${r.unit}</td><td>${r.check}</td></tr>`;
+  });
+  html += '</tbody></table>';
+  html += `<div class="sheet-footer">${escapeHtml(s.mfr)} &nbsp;&middot;&nbsp; ${MONTHS[s.mm - 1]} 20${pad(s.yy, 2)} &nbsp;&middot;&nbsp; Model ${pad(s.model, 3)}`;
+  if (list.length > SHOW) html += ` &nbsp;&middot;&nbsp; The first ${SHOW} IDs are shown; the CSV contains all IDs`;
+  html += '</div></div>';
+  $('preview-wrap').innerHTML = html;
+}
+
+function showFallback(csv, message) {
+  const ta = $('fallback');
+  ta.value = csv;
+  ta.hidden = false;
+  ta.focus();
+  ta.select();
+  setStatus(message, 'error');
+}
+
+// File saving goes through the viewer's download capability when it is available.
+let downloads = null;
+(async () => {
+  try { downloads = window.claude ? await window.claude.use('downloads') : null; }
+  catch (err) { downloads = null; }
+})();
+
+$('btn-download').addEventListener('click', async () => {
+  if (!currentBatch || !document.body.classList.contains('ready')) return;
+  const csv = buildCsv(currentBatch.list, operatorInfo());
+  if (!downloads) {
+    // Standalone page (for example GitHub Pages): save through a temporary download link.
+    try {
+      const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName();
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setStatus(`Saved ${fileName()}.`, 'ok');
+    } catch (err) {
+      showFallback(csv, 'The file could not be saved. Copy the CSV text below.');
+    }
+    return;
+  }
+  try {
+    await downloads.save({ filename: fileName(), data: new Blob([csv], { type: 'text/csv' }) });
+    setStatus(`Saved ${fileName()}.`, 'ok');
+  } catch (err) {
+    const code = err && err.code;
+    if (code === 'declined') setStatus('Download cancelled.');
+    else if (code === 'rate_limited') setStatus('A save prompt is already open.', 'error');
+    else showFallback(csv, 'The file could not be saved. Copy the CSV text below.');
+  }
+});
+
+$('btn-copy').addEventListener('click', () => {
+  if (!currentBatch || !document.body.classList.contains('ready')) return;
+  const csv = buildCsv(currentBatch.list, operatorInfo());
+  const fail = () => showFallback(csv, 'Clipboard access is unavailable. The CSV text is selected below.');
+  try {
+    navigator.clipboard.writeText(csv).then(
+      () => setStatus('Copied the CSV.', 'ok'),
+      fail
+    );
+  } catch (err) { fail(); }
+});
+
+// ── Validation of an existing VCID ──
+function verify() {
+  const raw = $('vin').value.trim().toUpperCase().replace(/[\s-]/g, '');
+  const out = $('verify-result');
+  if (!raw) { out.textContent = ''; out.className = 'verify-result'; return; }
+  const m = /^VC([A-Z]{3})(\d{12})$/.exec(raw);
+  if (!m) {
+    out.textContent = `Invalid format. A VCID is VC, 3 letters and 12 digits (17 characters); ${raw.length} characters were entered.`;
+    out.className = 'verify-result error';
+    return;
+  }
+  const d = m[2];
+  if (damm(d) === 0) {
+    const month = MONTHS[parseInt(d.slice(2, 4), 10) - 1] || `month ${d.slice(2, 4)}`;
+    out.textContent = `Valid. Manufacturer ${m[1]}, ${month} 20${d.slice(0, 2)}, model ${d.slice(4, 7)}, unit ${d.slice(7, 11)}.`;
+    out.className = 'verify-result ok';
+  } else {
+    out.textContent = `Invalid check digit. The check digit for this ID is ${damm(d.slice(0, 11))}; ${d[11]} was entered.`;
+    out.className = 'verify-result error';
+  }
+}
+
+document.querySelectorAll('.controls input, .controls select').forEach(el => {
+  if (el.id === 'vin') return;
+  el.addEventListener('input', update);
+  el.addEventListener('change', update);
+});
+$('vin').addEventListener('input', verify);
+
+update();
+</script>
+</body>
+</html>
