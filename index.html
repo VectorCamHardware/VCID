@@ -266,16 +266,16 @@
 </div>
 
 <div class="actions">
-  <button id="btn-download" class="primary" type="button" disabled>Download CSV</button>
-  <button id="btn-share" type="button" disabled hidden>Share CSV</button>
-  <button id="btn-copy" type="button" disabled>Copy CSV</button>
+  <button id="btn-download" class="primary" type="button" disabled>Download Excel</button>
+  <button id="btn-share" type="button" disabled hidden>Share Excel</button>
+  <button id="btn-copy" type="button" disabled>Copy IDs</button>
 </div>
 
 <p class="log-status" id="log-status" role="status" aria-live="polite"></p>
-<textarea class="fallback" id="fallback" readonly hidden aria-label="CSV text"></textarea>
+<textarea class="fallback" id="fallback" readonly hidden aria-label="VCID list"></textarea>
 
 <p class="hint">
-  Name is required before the CSV can be downloaded or copied.
+  Name is required before the IDs can be downloaded, shared or copied.
 </p>
 
 <div class="preview-outer">
@@ -294,6 +294,7 @@
 </div>
 <p class="verify-result" id="verify-result" role="status"></p>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 // Damm algorithm operation table (weakly totally anti-symmetric quasigroup of order 10)
 const DAMM = [
@@ -316,12 +317,6 @@ function escapeHtml(str) {
   return str.replace(/[&<>"']/g, ch => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   })[ch]);
-}
-
-// CSV fields are quoted when they contain a comma, quote or line break.
-function csvField(v) {
-  const s = String(v);
-  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }
 
 const $ = id => document.getElementById(id);
@@ -416,14 +411,25 @@ function buildIds(s) {
   return list;
 }
 
-// The CSV contains only the VCIDs, one per line, with no header row.
-function buildCsv(list) {
-  return list.map(r => r.vcid).join('\r\n') + '\r\n';
+const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+// The Excel file contains only the VCIDs, one per row in column A, with no header row.
+function buildXlsx(list) {
+  const ws = XLSX.utils.aoa_to_sheet(list.map(r => [r.vcid]));
+  ws['!cols'] = [{ wch: 20 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'VCIDs');
+  return new Blob([XLSX.write(wb, { bookType: 'xlsx', type: 'array' })], { type: XLSX_TYPE });
+}
+
+// Plain-text list of the VCIDs, one per line, for copying.
+function idText(list) {
+  return list.map(r => r.vcid).join('\n') + '\n';
 }
 
 function fileName() {
   const { s, list } = currentBatch;
-  return `${list[0].vcid}-${list[list.length - 1].vcid}.csv`;
+  return `${list[0].vcid}-${list[list.length - 1].vcid}.xlsx`;
 }
 
 // Enables or disables the buttons and the preview according to the required fields and the batch.
@@ -460,18 +466,24 @@ function renderPreview(list, s) {
   });
   html += '</tbody></table>';
   html += `<div class="sheet-footer">${escapeHtml(s.mfr)} &nbsp;&middot;&nbsp; ${MONTHS[s.mm - 1]} 20${pad(s.yy, 2)} &nbsp;&middot;&nbsp; Model ${pad(s.model, 3)}`;
-  if (list.length > SHOW) html += ` &nbsp;&middot;&nbsp; The first ${SHOW} IDs are shown; the CSV contains all IDs`;
+  if (list.length > SHOW) html += ` &nbsp;&middot;&nbsp; The first ${SHOW} IDs are shown; the Excel file contains all IDs`;
   html += '</div></div>';
   $('preview-wrap').innerHTML = html;
 }
 
-function showFallback(csv, message) {
+function showFallback(text, message) {
   const ta = $('fallback');
-  ta.value = csv;
+  ta.value = text;
   ta.hidden = false;
   ta.focus();
   ta.select();
   setStatus(message, 'error');
+}
+
+function excelReady() {
+  if (typeof XLSX !== 'undefined') return true;
+  setStatus('The Excel library could not be loaded. Check the internet connection and reload the page.', 'error');
+  return false;
 }
 
 // File saving goes through the viewer's download capability when it is available.
@@ -482,12 +494,12 @@ let downloads = null;
 })();
 
 $('btn-download').addEventListener('click', async () => {
-  if (!currentBatch || !document.body.classList.contains('ready')) return;
-  const csv = buildCsv(currentBatch.list);
+  if (!currentBatch || !document.body.classList.contains('ready') || !excelReady()) return;
+  const file = buildXlsx(currentBatch.list);
   if (!downloads) {
     // Standalone page (for example GitHub Pages): save through a temporary download link.
     try {
-      const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+      const url = URL.createObjectURL(file);
       const a = document.createElement('a');
       a.href = url;
       a.download = fileName();
@@ -497,50 +509,48 @@ $('btn-download').addEventListener('click', async () => {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       setStatus(`Saved ${fileName()}.`, 'ok');
     } catch (err) {
-      showFallback(csv, 'The file could not be saved. Copy the CSV text below.');
+      showFallback(idText(currentBatch.list), 'The file could not be saved. Copy the IDs below.');
     }
     return;
   }
   try {
-    await downloads.save({ filename: fileName(), data: new Blob([csv], { type: 'text/csv' }) });
+    await downloads.save({ filename: fileName(), data: file });
     setStatus(`Saved ${fileName()}.`, 'ok');
   } catch (err) {
     const code = err && err.code;
     if (code === 'declined') setStatus('Download cancelled.');
     else if (code === 'rate_limited') setStatus('A save prompt is already open.', 'error');
-    else showFallback(csv, 'The file could not be saved. Copy the CSV text below.');
+    else showFallback(idText(currentBatch.list), 'The file could not be saved. Copy the IDs below.');
   }
 });
 
-// ── Share: sends the CSV file through the device's share sheet (email, messages, AirDrop and so on) ──
-function csvFile() {
-  return new File([buildCsv(currentBatch.list)], fileName(), { type: 'text/csv' });
-}
+// ── Share: sends the Excel file through the device's share sheet (email, messages, AirDrop and so on) ──
 try {
-  const probe = new File(['VC'], 'probe.csv', { type: 'text/csv' });
+  const probe = new File(['VC'], 'probe.xlsx', { type: XLSX_TYPE });
   $('btn-share').hidden = !(navigator.canShare && navigator.canShare({ files: [probe] }));
 } catch (err) {
   $('btn-share').hidden = true;
 }
 
 $('btn-share').addEventListener('click', async () => {
-  if (!currentBatch || !document.body.classList.contains('ready')) return;
+  if (!currentBatch || !document.body.classList.contains('ready') || !excelReady()) return;
+  const file = new File([buildXlsx(currentBatch.list)], fileName(), { type: XLSX_TYPE });
   try {
-    await navigator.share({ files: [csvFile()], title: fileName() });
-    setStatus('Shared the CSV.', 'ok');
+    await navigator.share({ files: [file], title: fileName() });
+    setStatus('Shared the Excel file.', 'ok');
   } catch (err) {
     if (err && err.name === 'AbortError') setStatus('Sharing cancelled.');
-    else setStatus('Sharing is unavailable in this browser. Download the CSV instead.', 'error');
+    else setStatus('Sharing is unavailable in this browser. Download the Excel file instead.', 'error');
   }
 });
 
 $('btn-copy').addEventListener('click', () => {
   if (!currentBatch || !document.body.classList.contains('ready')) return;
-  const csv = buildCsv(currentBatch.list);
-  const fail = () => showFallback(csv, 'Clipboard access is unavailable. The CSV text is selected below.');
+  const text = idText(currentBatch.list);
+  const fail = () => showFallback(text, 'Clipboard access is unavailable. The IDs are selected below.');
   try {
-    navigator.clipboard.writeText(csv).then(
-      () => setStatus('Copied the CSV.', 'ok'),
+    navigator.clipboard.writeText(text).then(
+      () => setStatus('Copied the IDs.', 'ok'),
       fail
     );
   } catch (err) { fail(); }
