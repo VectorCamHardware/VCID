@@ -8,6 +8,7 @@
   /* Layout: matches the ID Printer (VectorCamHardware/IDPrinter) — title, rows of three fields, actions, status, hints, gray preview well. */
   :root { color-scheme: light; }
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  [hidden] { display: none !important; }
 
   body {
     font-family: system-ui, sans-serif;
@@ -41,14 +42,11 @@
 
   .controls { display: flex; flex-direction: column; gap: 10px; margin-bottom: 1rem; }
 
-  /* Each row holds up to three fields in fixed-width columns */
+  /* Fields are stacked vertically in a single column */
   .controls-row {
     display: grid;
-    grid-template-columns: repeat(3, minmax(155px, 220px));
+    grid-template-columns: minmax(0, 320px);
     gap: 10px;
-  }
-  @media (max-width: 560px) {
-    .controls-row { grid-template-columns: 1fr; }
   }
 
   .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
@@ -71,6 +69,30 @@
     width: 100%;
     font-family: inherit;
   }
+  /* Custom code fields appear under their dropdown when Other is selected */
+  .subfield { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+  /* Padded value shown inside the right end of a number field */
+  .with-suffix { position: relative; }
+  .with-suffix input { padding-right: 72px; }
+  .suffix {
+    position: absolute;
+    right: 9px;
+    top: 50%;
+    transform: translateY(-50%);
+    font: 12px ui-monospace, Menlo, Consolas, monospace;
+    color: #999;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  .suffix:empty { display: none; }
+  .with-suffix input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+  .with-suffix input[type="number"]::-webkit-inner-spin-button,
+  .with-suffix input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+
+  /* Locked fields are filled in automatically and cannot be edited */
+  .field input[readonly] { background: #eee; color: #555; border-color: #ddd; cursor: default; }
+
   .field input:focus,
   .field select:focus { outline: 2px solid #4a90e2; outline-offset: 1px; }
   .field input.missing { border-color: #d9534f; }
@@ -196,40 +218,56 @@
         <option value="JHU">Johns Hopkins (JHU)</option>
         <option value="__other">Other</option>
       </select>
+      <div class="subfield" id="mfrCustomField" hidden>
+        <label for="mfrCustom">Custom manufacturer code</label>
+        <input type="text" id="mfrCustom" maxlength="3" autocomplete="off" placeholder="ABC">
+      </div>
     </div>
     <div class="field">
-      <label for="yr">Year</label>
-      <select id="yr"></select>
+      <label for="yr">Year <span class="range">(current)</span></label>
+      <input type="text" id="yr" readonly>
     </div>
     <div class="field">
-      <label for="mo">Month</label>
-      <select id="mo"></select>
-    </div>
-  </div>
-  <div class="controls-row" id="mfrCustomRow" hidden>
-    <div class="field">
-      <label for="mfrCustom">Manufacturer code <span class="range">(3 letters)</span></label>
-      <input type="text" id="mfrCustom" maxlength="3" autocomplete="off" placeholder="ABC">
+      <label for="mo">Month <span class="range">(current)</span></label>
+      <input type="text" id="mo" readonly>
     </div>
   </div>
   <div class="controls-row">
     <div class="field">
-      <label for="model">Model number <span class="range">(1–999)</span></label>
-      <input type="number" id="model" value="1" min="1" max="999">
+      <label for="modelSel">Model</label>
+      <select id="modelSel">
+        <option value="1">Moto G Play 1.6 (001)</option>
+        <option value="2">Pop20 1.0 (002)</option>
+        <option value="__other">Other</option>
+      </select>
+      <div class="subfield" id="modelCustomField" hidden>
+        <label for="model">Custom model number</label>
+        <div class="with-suffix">
+          <input type="number" id="model" value="3" min="1" max="999">
+          <span class="suffix" id="modelPad"></span>
+        </div>
+      </div>
     </div>
     <div class="field">
-      <label for="start">Start unit number <span class="range">(1–9999)</span></label>
-      <input type="number" id="start" value="1" min="1" max="9999">
+      <label for="start">Start unit number</label>
+      <div class="with-suffix">
+        <input type="number" id="start" value="1" min="1" max="9999">
+        <span class="suffix" id="startPad"></span>
+      </div>
     </div>
     <div class="field">
-      <label for="qty">Unit quantity</label>
-      <input type="number" id="qty" value="25" min="1" max="9999">
+      <label for="qty">Batch size</label>
+      <div class="with-suffix">
+        <input type="number" id="qty" value="25" min="1" max="9999">
+        <span class="suffix" id="qtyPad"></span>
+      </div>
     </div>
   </div>
 </div>
 
 <div class="actions">
   <button id="btn-download" class="primary" type="button" disabled>Download CSV</button>
+  <button id="btn-share" type="button" disabled hidden>Share CSV</button>
   <button id="btn-copy" type="button" disabled>Copy CSV</button>
 </div>
 
@@ -289,19 +327,17 @@ function csvField(v) {
 const $ = id => document.getElementById(id);
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 
-// Year and month default to the current date
-const now = new Date();
-const thisYear = now.getFullYear();
-for (let y = thisYear - 2; y <= thisYear + 5; y++) {
-  const opt = new Option(`${y} (${pad(y % 100, 2)})`, y % 100);
-  if (y === thisYear) opt.selected = true;
-  $('yr').add(opt);
+// Year and month are locked to the current date and filled in automatically.
+function syncDate() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1;
+  $('yr').value = `${y} (${pad(y % 100, 2)})`;
+  $('yr').dataset.value = y % 100;
+  $('mo').value = `${MONTHS[m - 1]} (${pad(m, 2)})`;
+  $('mo').dataset.value = m;
 }
-MONTHS.forEach((m, i) => {
-  const opt = new Option(`${m} (${pad(i + 1, 2)})`, i + 1);
-  if (i === now.getMonth()) opt.selected = true;
-  $('mo').add(opt);
-});
+syncDate();
 
 // ── Required operator field (name) ──
 const nameEl = $('opname');
@@ -323,7 +359,7 @@ function readBatch() {
   const problems = [];
   let mfr = $('mfr').value;
   const custom = mfr === '__other';
-  $('mfrCustomRow').hidden = !custom;
+  $('mfrCustomField').hidden = !custom;
   const mfrEl = $('mfrCustom');
   if (custom) {
     mfr = mfrEl.value.toUpperCase().replace(/[^A-Z]/g, '');
@@ -332,11 +368,21 @@ function readBatch() {
   }
   mfrEl.classList.toggle('missing', custom && mfr.length !== 3);
 
-  const yy = parseInt($('yr').value, 10);
-  const mm = parseInt($('mo').value, 10);
-  const model = Number($('model').value);
+  syncDate();
+  const yy = parseInt($('yr').dataset.value, 10);
+  const mm = parseInt($('mo').dataset.value, 10);
+  // Model: a listed model, or a custom model number entered under Other
+  const modelChoice = $('modelSel').value;
+  const customModel = modelChoice === '__other';
+  $('modelCustomField').hidden = !customModel;
+  const model = customModel ? Number($('model').value) : Number(modelChoice);
   const start = Number($('start').value);
   const qty = Number($('qty').value);
+  const end = start + qty - 1;
+  const customNum = Number($('model').value);
+  $('modelPad').textContent = Number.isInteger(customNum) && customNum >= 1 && customNum <= 999 ? pad(customNum, 3) : '';
+  $('startPad').textContent = Number.isInteger(start) && start >= 1 && start <= 9999 ? pad(start, 4) : '';
+  $('qtyPad').textContent = $('startPad').textContent && Number.isInteger(qty) && qty >= 1 && end <= 9999 ? `to ${pad(end, 4)}` : '';
 
   const badModel = !Number.isInteger(model) || model < 1 || model > 999;
   const badStart = !Number.isInteger(start) || start < 1 || start > 9999;
@@ -345,10 +391,10 @@ function readBatch() {
   if (badStart) problems.push('The start unit number must be a whole number from 1 to 9999.');
   else if (badQty) {
     problems.push(qty >= 1 && Number.isInteger(qty)
-      ? `The unit quantity exceeds the available range. At most ${9999 - start + 1} units can follow unit ${pad(start, 4)}.`
-      : 'The unit quantity must be a whole number of at least 1.');
+      ? `The batch size exceeds the available range. At most ${9999 - start + 1} units can follow unit ${pad(start, 4)}.`
+      : 'The batch size must be a whole number of at least 1.');
   }
-  $('model').classList.toggle('missing', badModel);
+  $('model').classList.toggle('missing', customModel && badModel);
   $('start').classList.toggle('missing', badStart);
   $('qty').classList.toggle('missing', badQty);
 
@@ -370,10 +416,9 @@ function buildIds(s) {
   return list;
 }
 
-function buildCsv(list, op) {
-  const header = ['VCID', 'Manufacturer', 'Year', 'Month', 'Model No', 'Unit No', 'Check Digit', 'Name'];
-  const rows = list.map(r => [r.vcid, r.mfr, r.yy, r.mm, r.model, r.unit, r.check, op.name].map(csvField).join(','));
-  return header.join(',') + '\r\n' + rows.join('\r\n') + '\r\n';
+// The CSV contains only the VCIDs, one per line, with no header row.
+function buildCsv(list) {
+  return list.map(r => r.vcid).join('\r\n') + '\r\n';
 }
 
 function fileName() {
@@ -392,7 +437,7 @@ function update() {
   const { s, problems } = readBatch();
   if (problems.length) {
     currentBatch = null;
-    $('btn-download').disabled = $('btn-copy').disabled = true;
+    $('btn-download').disabled = $('btn-copy').disabled = $('btn-share').disabled = true;
     $('preview-wrap').innerHTML = '';
     setStatus(problems.join(' '), 'error');
     return;
@@ -400,7 +445,7 @@ function update() {
 
   const list = buildIds(s);
   currentBatch = { s, list };
-  $('btn-download').disabled = $('btn-copy').disabled = !ready;
+  $('btn-download').disabled = $('btn-copy').disabled = $('btn-share').disabled = !ready;
   setStatus(`IDs: ${list[0].vcid} – ${list[list.length - 1].vcid}`);
   renderPreview(list, s);
 }
@@ -438,7 +483,7 @@ let downloads = null;
 
 $('btn-download').addEventListener('click', async () => {
   if (!currentBatch || !document.body.classList.contains('ready')) return;
-  const csv = buildCsv(currentBatch.list, operatorInfo());
+  const csv = buildCsv(currentBatch.list);
   if (!downloads) {
     // Standalone page (for example GitHub Pages): save through a temporary download link.
     try {
@@ -467,9 +512,31 @@ $('btn-download').addEventListener('click', async () => {
   }
 });
 
+// ── Share: sends the CSV file through the device's share sheet (email, messages, AirDrop and so on) ──
+function csvFile() {
+  return new File([buildCsv(currentBatch.list)], fileName(), { type: 'text/csv' });
+}
+try {
+  const probe = new File(['VC'], 'probe.csv', { type: 'text/csv' });
+  $('btn-share').hidden = !(navigator.canShare && navigator.canShare({ files: [probe] }));
+} catch (err) {
+  $('btn-share').hidden = true;
+}
+
+$('btn-share').addEventListener('click', async () => {
+  if (!currentBatch || !document.body.classList.contains('ready')) return;
+  try {
+    await navigator.share({ files: [csvFile()], title: fileName() });
+    setStatus('Shared the CSV.', 'ok');
+  } catch (err) {
+    if (err && err.name === 'AbortError') setStatus('Sharing cancelled.');
+    else setStatus('Sharing is unavailable in this browser. Download the CSV instead.', 'error');
+  }
+});
+
 $('btn-copy').addEventListener('click', () => {
   if (!currentBatch || !document.body.classList.contains('ready')) return;
-  const csv = buildCsv(currentBatch.list, operatorInfo());
+  const csv = buildCsv(currentBatch.list);
   const fail = () => showFallback(csv, 'Clipboard access is unavailable. The CSV text is selected below.');
   try {
     navigator.clipboard.writeText(csv).then(
