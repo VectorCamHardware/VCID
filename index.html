@@ -257,11 +257,7 @@
   <div class="controls-row">
     <div class="field">
       <label for="modelSel">Model</label>
-      <select id="modelSel">
-        <option value="1">Moto G Play 1.6 (001)</option>
-        <option value="2">Pop20 1.0 (002)</option>
-        <option value="__other">Other</option>
-      </select>
+      <select id="modelSel"></select>
       <div class="subfield" id="modelCustomField" hidden>
         <label for="model">Custom model number</label>
         <div class="with-suffix">
@@ -366,6 +362,25 @@ function syncDate() {
   $('mo').dataset.value = m;
 }
 syncDate();
+
+// ── Models: the list depends on the prefix; Other allows a custom model number ──
+const MODELS = {
+  VC: [[1, 'Moto G Play 1.6 (001)'], [2, 'Pop20 1.0 (002)']],
+  VT: [[1, 'Version 1.0 (001)']],
+  VP: [[1, 'Moto G Play 1.6 (001)'], [2, 'Pop20 1.0 (002)']],
+};
+
+function fillModels() {
+  const sel = $('modelSel');
+  const previous = sel.value;
+  sel.innerHTML = '';
+  (MODELS[$('prefix').value] || []).forEach(([num, label]) => sel.add(new Option(label, num)));
+  sel.add(new Option('Other', '__other'));
+  // Keep Other selected across prefixes; otherwise start at the first listed model.
+  sel.value = previous === '__other' ? '__other' : sel.options[0].value;
+}
+fillModels();
+$('prefix').addEventListener('change', fillModels);
 
 // ── Required operator field (name) ──
 const nameEl = $('opname');
