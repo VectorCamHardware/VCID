@@ -3,14 +3,13 @@
 
 Usage: python3 scripts/validate_vcid_log.py data/vcid_log.csv
 
-Checks:
+The log has one row per device. Checks:
   - The header matches the expected columns, in order.
   - Every row has a batch ID, a UTC timestamp, a name, a prefix (VC, VT or VP), a three-letter
-    manufacturer, a two-digit year, a two-digit month and a three-digit model.
-  - start and end are unit numbers from 1 to 9999 and end >= start.
-  - first_id, last_id and count agree with the other columns, including the Damm check digit.
-  - Batch IDs are unique.
-  - Batches with the same prefix, manufacturer, year, month and model do not overlap.
+    manufacturer, a two-digit year, a two-digit month, a three-digit model and a four-digit unit.
+  - The VCID agrees with the other columns, including the Damm check digit.
+  - Each VCID appears once.
+  - The rows of a batch share one timestamp, name, prefix, manufacturer, year, month and model.
 
 Exits with status 1 and lists every problem found, or prints a one-line summary and exits 0.
 """
@@ -18,15 +17,15 @@ Exits with status 1 and lists every problem found, or prints a one-line summary 
 import csv
 import re
 import sys
-from collections import defaultdict
 
 HEADERS = [
-    "batch_id", "timestamp_utc", "name", "prefix", "manufacturer", "year", "month",
-    "model", "start", "end", "first_id", "last_id", "count",
+    "vcid", "batch_id", "timestamp_utc", "name", "prefix", "manufacturer", "year", "month",
+    "model", "unit",
 ]
 PREFIXES = {"VC", "VT", "VP"}
+BATCH_FIELDS = ["timestamp_utc", "name", "prefix", "manufacturer", "year", "month", "model"]
 TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
-MANUFACTURER_RE = re.compile(r"^[A-Z]{3}$")
+BATCH_RE = re.compile(r"^B-[0-9A-F]{8}$")
 
 DAMM = [
     [0, 3, 1, 7, 5, 9, 8, 6, 4, 2], [7, 0, 9, 2, 1, 5, 4, 8, 6, 3], [4, 2, 0, 6, 8, 7, 1, 3, 5, 9],
@@ -43,8 +42,8 @@ def damm(digits: str) -> int:
     return i
 
 
-def vcid(r: dict, unit: int) -> str:
-    body = f"{r['year']}{r['month']}{r['model']}{unit:04d}"
+def expected_vcid(r: dict) -> str:
+    body = f"{r['year']}{r['month']}{r['model']}{r['unit']}"
     return f"{r['prefix']}{r['manufacturer']}{body}{damm(body)}"
 
 
@@ -60,8 +59,9 @@ def validate(path: str) -> list[str]:
             return [f"Unexpected header: {','.join(header)}"]
         rows = list(reader)
 
-    seen_ids: set[str] = set()
-    ranges: dict[tuple, list[tuple[int, int, str, int]]] = defaultdict(list)
+    seen: dict[str, int] = {}
+    batches: dict[str, tuple[dict, int]] = {}
+    count = 0
 
     for line, row in enumerate(rows, start=2):
         if not any(cell.strip() for cell in row):
@@ -70,74 +70,49 @@ def validate(path: str) -> list[str]:
             errors.append(f"Line {line}: expected {len(HEADERS)} columns, found {len(row)}.")
             continue
         r = dict(zip(HEADERS, row))
+        count += 1
 
-        if not r["batch_id"]:
-            errors.append(f"Line {line}: batch_id is empty.")
-        elif r["batch_id"] in seen_ids:
-            errors.append(f"Line {line}: duplicate batch_id {r['batch_id']}.")
-        seen_ids.add(r["batch_id"])
-
+        if not BATCH_RE.match(r["batch_id"]):
+            errors.append(f"Line {line}: batch_id {r['batch_id']!r} is not in the form B-XXXXXXXX.")
         if not TIMESTAMP_RE.match(r["timestamp_utc"]):
             errors.append(f"Line {line}: timestamp_utc is not in the form YYYY-MM-DDTHH:MM:SSZ.")
         if not r["name"].strip():
             errors.append(f"Line {line}: name is empty.")
 
-        key_ok = True
-        if r["prefix"] not in PREFIXES:
-            errors.append(f"Line {line}: prefix must be VC, VT or VP.")
-            key_ok = False
-        if not MANUFACTURER_RE.match(r["manufacturer"]):
-            errors.append(f"Line {line}: manufacturer must be three capital letters.")
-            key_ok = False
-        if not re.fullmatch(r"\d{2}", r["year"]):
-            errors.append(f"Line {line}: year must be two digits.")
-            key_ok = False
-        if not re.fullmatch(r"\d{2}", r["month"]) or not 1 <= int(r["month"]) <= 12:
-            errors.append(f"Line {line}: month must be two digits from 01 to 12.")
-            key_ok = False
-        if not re.fullmatch(r"\d{3}", r["model"]) or r["model"] == "000":
-            errors.append(f"Line {line}: model must be three digits from 001 to 999.")
-            key_ok = False
+        fields_ok = True
+        checks = [
+            (r["prefix"] in PREFIXES, "prefix must be VC, VT or VP"),
+            (re.fullmatch(r"[A-Z]{3}", r["manufacturer"]), "manufacturer must be three capital letters"),
+            (re.fullmatch(r"\d{2}", r["year"]), "year must be two digits"),
+            (re.fullmatch(r"\d{2}", r["month"]) and 1 <= int(r["month"]) <= 12, "month must be from 01 to 12"),
+            (re.fullmatch(r"\d{3}", r["model"]) and r["model"] != "000", "model must be from 001 to 999"),
+            (re.fullmatch(r"\d{4}", r["unit"]) and r["unit"] != "0000", "unit must be from 0001 to 9999"),
+        ]
+        for ok, message in checks:
+            if not ok:
+                errors.append(f"Line {line}: {message}.")
+                fields_ok = False
 
-        try:
-            start, end, count = int(r["start"]), int(r["end"]), int(r["count"])
-        except ValueError:
-            errors.append(f"Line {line}: start, end and count must be whole numbers.")
-            continue
+        if fields_ok and r["vcid"] != expected_vcid(r):
+            errors.append(f"Line {line}: vcid {r['vcid']} does not match the other columns ({expected_vcid(r)}).")
 
-        if not 1 <= start <= 9999 or not 1 <= end <= 9999 or end < start:
-            errors.append(f"Line {line}: start {start} and end {end} must be from 1 to 9999 with end >= start.")
-            continue
-        if count != end - start + 1:
-            errors.append(f"Line {line}: count is {count}; expected {end - start + 1}.")
-        if not key_ok:
-            continue
-        if r["first_id"] != vcid(r, start):
-            errors.append(f"Line {line}: first_id {r['first_id']} does not match the other columns ({vcid(r, start)}).")
-        if r["last_id"] != vcid(r, end):
-            errors.append(f"Line {line}: last_id {r['last_id']} does not match the other columns ({vcid(r, end)}).")
+        if r["vcid"] in seen:
+            errors.append(f"Line {line}: VCID {r['vcid']} already appears on line {seen[r['vcid']]}.")
+        else:
+            seen[r["vcid"]] = line
 
-        key = (r["prefix"], r["manufacturer"], r["year"], r["month"], r["model"])
-        ranges[key].append((start, end, r["batch_id"], line))
-
-    for key, items in ranges.items():
-        items.sort()
-        # Compare each batch with the earlier batch that reaches furthest.
-        widest = items[0]
-        for item in items[1:]:
-            s1, e1, id1, l1 = widest
-            s2, e2, id2, l2 = item
-            if s2 <= e1:
-                errors.append(
-                    f"Lines {l1} and {l2}: {'/'.join(key)} units {s1}-{e1} ({id1}) and {s2}-{e2} ({id2}) overlap."
-                )
-            if e2 > e1:
-                widest = item
+        if r["batch_id"] in batches:
+            first, first_line = batches[r["batch_id"]]
+            for field in BATCH_FIELDS:
+                if r[field] != first[field]:
+                    errors.append(
+                        f"Line {line}: {field} differs from line {first_line} of batch {r['batch_id']}."
+                    )
+        else:
+            batches[r["batch_id"]] = (r, line)
 
     if not errors:
-        total = sum(len(v) for v in ranges.values())
-        ids = sum(e - s + 1 for v in ranges.values() for s, e, _, _ in v)
-        print(f"{path}: {total} batches, {ids} VCIDs, no problems found.")
+        print(f"{path}: {count} VCIDs in {len(batches)} batches, no problems found.")
     return errors
 
 

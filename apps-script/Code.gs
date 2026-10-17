@@ -2,29 +2,33 @@
 /**
  * VCID Generator — VCID log backend.
  *
- * A Google Apps Script web app bound to a Google Sheet. Every batch of VCIDs reserved
- * in the VCID Generator is recorded as one row in the "Log" tab. A batch whose unit
- * numbers overlap a logged batch with the same prefix, manufacturer, year, month and
- * model is refused, so no VCID can be issued twice.
+ * A Google Apps Script web app bound to a Google Sheet. Every VCID reserved in the
+ * VCID Generator is recorded as one row, on the tab for its prefix:
+ *   VC → "VectorCam (VC)", VT → "VectorCatch (VT)", VP → "Phone (VP)".
+ * A batch that contains a VCID already on the tab is refused, so no VCID is issued twice.
  *
  * Endpoints (all responses are JSON unless noted):
  *   GET  ?action=next&prefix=VC&manufacturer=JHU&year=26&month=10&model=001
  *                                          Next free unit number for that combination.
- *   GET  ?action=csv&token=<EXPORT_TOKEN>  Full log as CSV (text/csv). Used by the GitHub Action.
+ *   GET  ?action=csv&token=<EXPORT_TOKEN>  All tabs as one CSV (text/csv). Used by the GitHub Action.
  *   POST {"action":"reserve", ...}         Checks and records a batch. Body is sent as text/plain.
  *
  * Setup: see README.md, section "VCID log".
  */
 
-const SHEET_NAME = 'Log';
+// One tab per prefix. The tab is found by name, so rename a tab here and in the sheet together.
+const TABS = {
+  VC: 'VectorCam (VC)',
+  VT: 'VectorCatch (VT)',
+  VP: 'Phone (VP)'
+};
 
-// Column order of the Log tab and of data/vcid_log.csv. Do not reorder.
+// Column order of every prefix tab and of data/vcid_log.csv. Do not reorder.
 const HEADERS = [
-  'batch_id', 'timestamp_utc', 'name', 'prefix', 'manufacturer', 'year', 'month',
-  'model', 'start', 'end', 'first_id', 'last_id', 'count'
+  'vcid', 'batch_id', 'timestamp_utc', 'name', 'prefix', 'manufacturer', 'year', 'month',
+  'model', 'unit'
 ];
 
-const PREFIXES = ['VC', 'VT', 'VP'];
 const MAX_UNIT = 9999;
 const MAX_TEXT = 60;
 
@@ -39,7 +43,7 @@ function doGet(e) {
   try {
     if (p.action === 'next') {
       const key = validateKey_(p);
-      return json_({ ok: true, key: keyString_(key), next_start: nextStart_(readLog_(), key) });
+      return json_({ ok: true, key: keyString_(key), next_start: nextStart_(readTab_(key.prefix), key) });
     }
     if (p.action === 'csv') {
       const expected = PropertiesService.getScriptProperties().getProperty('EXPORT_TOKEN');
@@ -78,27 +82,49 @@ function doPost(e) {
     return json_({ ok: false, error: 'busy', message: 'The VCID log is busy. Try again.' });
   }
   try {
-    const rows = readLog_();
+    const rows = readTab_(req.prefix);
     const key = keyString_(req);
-    const overlaps = rows.filter(r => keyString_(r) === key && req.start <= r.end && req.end >= r.start);
+    const sameKey = rows.filter(r => keyString_(r) === key);
+    const clash = sameKey.find(r => r.unit >= req.start && r.unit <= req.end);
 
-    if (overlaps.length) {
-      const c = overlaps[0];
+    if (clash) {
+      // Describe the logged batch that holds the clashing VCID.
+      const batch = sameKey.filter(r => r.batch_id === clash.batch_id).sort((a, b) => a.unit - b.unit);
       return json_({
         ok: false,
         error: 'overlap',
         message: 'Part of this batch has already been issued.',
         conflict: {
-          batch_id: c.batch_id, timestamp_utc: c.timestamp_utc, name: c.name,
-          first_id: c.first_id, last_id: c.last_id
+          batch_id: clash.batch_id, timestamp_utc: clash.timestamp_utc, name: clash.name,
+          first_id: batch[0].vcid, last_id: batch[batch.length - 1].vcid
         },
         next_start: nextStart_(rows, req)
       });
     }
 
+    const batchId = 'B-' + Utilities.getUuid().replace(/-/g, '').slice(0, 8).toUpperCase();
+    const timestamp = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+    const devices = [];
+    for (let unit = req.start; unit <= req.end; unit++) {
+      devices.push({
+        vcid: vcid_(req, unit),
+        batch_id: batchId,
+        timestamp_utc: timestamp,
+        name: req.name,
+        prefix: req.prefix,
+        manufacturer: req.manufacturer,
+        year: req.year,
+        month: req.month,
+        model: req.model,
+        unit: pad_(unit, 4)
+      });
+    }
+
+    appendRows_(req.prefix, devices);
+
     const record = {
-      batch_id: 'B-' + Utilities.getUuid().replace(/-/g, '').slice(0, 8).toUpperCase(),
-      timestamp_utc: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+      batch_id: batchId,
+      timestamp_utc: timestamp,
       name: req.name,
       prefix: req.prefix,
       manufacturer: req.manufacturer,
@@ -107,15 +133,11 @@ function doPost(e) {
       model: req.model,
       start: req.start,
       end: req.end,
-      first_id: vcid_(req, req.start),
-      last_id: vcid_(req, req.end),
-      count: req.end - req.start + 1
+      first_id: devices[0].vcid,
+      last_id: devices[devices.length - 1].vcid,
+      count: devices.length
     };
-
-    appendRecord_(record);
-
-    rows.push(record);
-    return json_({ ok: true, record: record, next_start: nextStart_(rows, req) });
+    return json_({ ok: true, record: record, next_start: Math.max(maxUnit_(sameKey), req.end) + 1 });
   } finally {
     lock.releaseLock();
   }
@@ -126,7 +148,7 @@ function doPost(e) {
 // Prefix, manufacturer, year, month and model: the fields that share one unit-number sequence.
 function validateKey_(b) {
   const prefix = String(b.prefix == null ? '' : b.prefix).trim().toUpperCase();
-  if (PREFIXES.indexOf(prefix) === -1) throw new Error('Prefix must be VC, VT or VP.');
+  if (!TABS[prefix]) throw new Error('Prefix must be VC, VT or VP.');
 
   const manufacturer = String(b.manufacturer == null ? '' : b.manufacturer).trim().toUpperCase();
   if (!/^[A-Z]{3}$/.test(manufacturer)) throw new Error('Manufacturer must be three letters.');
@@ -223,10 +245,11 @@ function keyString_(r) {
 
 // ── Log access ──
 
-function getSheet_() {
+function getTab_(prefix) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let sheet = ss.getSheetByName(SHEET_NAME);
-  if (!sheet) sheet = ss.insertSheet(SHEET_NAME);
+  const name = TABS[prefix];
+  let sheet = ss.getSheetByName(name);
+  if (!sheet) sheet = ss.insertSheet(name);
   if (sheet.getLastRow() === 0) {
     // Plain-text format keeps timestamps, codes and leading zeros exactly as written.
     sheet.getRange(1, 1, sheet.getMaxRows(), HEADERS.length).setNumberFormat('@');
@@ -236,19 +259,20 @@ function getSheet_() {
   return sheet;
 }
 
-// Writes one row as plain text, so the sheet does not convert timestamps or numbers.
-function appendRecord_(record) {
-  const sheet = getSheet_();
-  const row = sheet.getLastRow() + 1;
-  if (row > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), 100);
-  sheet.getRange(row, 1, 1, HEADERS.length)
+// Writes one row per device as plain text, so the sheet does not convert timestamps or numbers.
+function appendRows_(prefix, devices) {
+  const sheet = getTab_(prefix);
+  const first = sheet.getLastRow() + 1;
+  const needed = first + devices.length - 1 - sheet.getMaxRows();
+  if (needed > 0) sheet.insertRowsAfter(sheet.getMaxRows(), needed + 100);
+  sheet.getRange(first, 1, devices.length, HEADERS.length)
     .setNumberFormat('@')
-    .setValues([HEADERS.map(h => String(record[h]))]);
+    .setValues(devices.map(d => HEADERS.map(h => String(d[h]))));
   SpreadsheetApp.flush();
 }
 
-function readLog_() {
-  const sheet = getSheet_();
+function readTab_(prefix) {
+  const sheet = getTab_(prefix);
   const last = sheet.getLastRow();
   if (last < 2) return [];
   const values = sheet.getRange(2, 1, last - 1, HEADERS.length).getDisplayValues();
@@ -258,32 +282,38 @@ function readLog_() {
       const r = {};
       HEADERS.forEach((h, i) => { r[h] = String(row[i]).trim(); });
       // Rows typed by hand may have lost leading zeros; normalize them for comparison.
-      r.prefix = r.prefix.toUpperCase();
+      r.prefix = (r.prefix || prefix).toUpperCase();
       r.manufacturer = r.manufacturer.toUpperCase();
       r.year = pad_(parseInt(r.year, 10), 2);
       r.month = pad_(parseInt(r.month, 10), 2);
       r.model = pad_(parseInt(r.model, 10), 3);
-      r.start = parseInt(r.start, 10);
-      r.end = parseInt(r.end, 10);
+      r.unit = parseInt(r.unit, 10);
       return r;
     })
-    .filter(r => !isNaN(r.start) && !isNaN(r.end));
+    .filter(r => !isNaN(r.unit));
 }
 
-// The unit number after the highest logged end for the combination, or 1 if none is logged.
+function maxUnit_(rows) {
+  let max = 0;
+  rows.forEach(r => { if (r.unit > max) max = r.unit; });
+  return max;
+}
+
+// The unit number after the highest logged unit for the combination, or 1 if none is logged.
 function nextStart_(rows, key) {
   const k = keyString_(key);
-  let maxEnd = 0;
-  rows.forEach(r => { if (keyString_(r) === k && r.end > maxEnd) maxEnd = r.end; });
-  return maxEnd + 1;
+  return maxUnit_(rows.filter(r => keyString_(r) === k)) + 1;
 }
 
+// Every prefix tab, in the order of TABS, as one CSV with a single header row.
 function toCsv_() {
-  const sheet = getSheet_();
-  const last = sheet.getLastRow();
-  const rows = last >= 2
-    ? sheet.getRange(2, 1, last - 1, HEADERS.length).getDisplayValues().filter(r => r[0] !== '')
-    : [];
+  let rows = [];
+  Object.keys(TABS).forEach(prefix => {
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TABS[prefix]);
+    if (!sheet || sheet.getLastRow() < 2) return;
+    rows = rows.concat(sheet.getRange(2, 1, sheet.getLastRow() - 1, HEADERS.length)
+      .getDisplayValues().filter(r => r[0] !== ''));
+  });
   return [HEADERS].concat(rows).map(r => r.map(csvCell_).join(',')).join('\n') + '\n';
 }
 
