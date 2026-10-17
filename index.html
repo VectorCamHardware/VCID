@@ -422,10 +422,10 @@ function buildIds(s) {
 
 const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
-// The Excel file contains only the VCIDs, one per row in column A, with no header row.
+// The Excel file contains only the VCIDs, one per row, repeated in columns A and B, with no header row.
 function buildXlsx(list) {
-  const ws = XLSX.utils.aoa_to_sheet(list.map(r => [r.vcid]));
-  ws['!cols'] = [{ wch: 20 }];
+  const ws = XLSX.utils.aoa_to_sheet(list.map(r => [r.vcid, r.vcid]));
+  ws['!cols'] = [{ wch: 20 }, { wch: 20 }];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'VCIDs');
   return new Blob([XLSX.write(wb, { bookType: 'xlsx', type: 'array' })], { type: XLSX_TYPE });
