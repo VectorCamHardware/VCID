@@ -121,6 +121,20 @@
   .log-status.error { color: #b52b27; }
   .log-status.ok { color: #2b6e2f; }
 
+  /* Reserved batch: the only IDs that can be downloaded, shared or copied */
+  .reserved {
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 12px 14px 2px;
+    margin-bottom: 1rem;
+    max-width: 680px;
+  }
+  .reserved-title { font-size: 13px; margin-bottom: 10px; overflow-wrap: anywhere; }
+  .reserved-title .code { font-family: ui-monospace, Menlo, Consolas, monospace; font-weight: 600; }
+  .reserved .actions { margin-bottom: 8px; }
+  .reserved .log-status { margin-bottom: 10px; }
+
   .hint { font-size: 12px; color: #888; margin-bottom: 1rem; max-width: 70ch; }
 
   textarea.fallback {
@@ -274,16 +288,27 @@
 </div>
 
 <div class="actions">
-  <button id="btn-download" class="primary" type="button" disabled>Download Excel</button>
-  <button id="btn-share" type="button" disabled hidden>Share Excel</button>
-  <button id="btn-copy" type="button" disabled>Copy IDs</button>
+  <button id="btn-reserve" class="primary" type="button" disabled>Reserve batch</button>
 </div>
 
 <p class="log-status" id="log-status" role="status" aria-live="polite"></p>
+
+<div class="reserved" id="reserved" hidden>
+  <p class="reserved-title" id="reserved-title"></p>
+  <div class="actions">
+    <button id="btn-download" class="primary" type="button">Download Excel</button>
+    <button id="btn-share" type="button" hidden>Share Excel</button>
+    <button id="btn-copy" type="button">Copy IDs</button>
+  </div>
+  <p class="log-status" id="export-status" role="status" aria-live="polite"></p>
+</div>
 <textarea class="fallback" id="fallback" readonly hidden aria-label="VCID list"></textarea>
 
 <p class="hint">
-  Name is required before the IDs can be downloaded, shared or copied.
+  Name is required before a batch can be reserved.
+</p>
+<p class="hint">
+  Each reserved batch is recorded in the VCID log. Unit numbers that have already been issued cannot be issued again.
 </p>
 
 <div class="preview-outer">
@@ -356,6 +381,69 @@ function setStatus(message, kind) {
 }
 
 let currentBatch = null; // { s, list } for the IDs shown in the preview
+let reserved = null;     // { record, list } for the batch most recently reserved in the VCID log
+
+// ── VCID log ──
+// Web app URL of the VCID log (Google Apps Script deployment ending in /exec). See README.md.
+const API_URL = '';
+
+let logBusy = false;   // true while a reservation request is pending
+let logNotice = null;  // message from the VCID log shown in place of the ID range
+let lastKey = null;    // prefix, manufacturer, year, month and model of the last start-number lookup
+let nextTimer = null;
+let nextSeq = 0;
+
+async function logRequest(method, payload) {
+  let res;
+  if (method === 'GET') {
+    res = await fetch(API_URL + '?' + new URLSearchParams(payload).toString());
+  } else {
+    // text/plain avoids a CORS preflight, which Apps Script does not answer.
+    res = await fetch(API_URL, { method: 'POST', body: JSON.stringify(payload) });
+  }
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
+}
+
+// The fields that share one unit-number sequence in the VCID log.
+function keyParams(s) {
+  return { prefix: s.prefix, manufacturer: s.mfr, year: pad(s.yy, 2), month: pad(s.mm, 2), model: pad(s.model, 3) };
+}
+
+function keyIsValid(s) {
+  return /^[A-Z]{3}$/.test(s.mfr) && Number.isInteger(s.model) && s.model >= 1 && s.model <= 999;
+}
+
+// Asks the VCID log for the next unissued unit number and enters it as the start unit number.
+async function loadNextStart(s) {
+  if (!API_URL || !keyIsValid(s)) return;
+  const seq = ++nextSeq;
+  try {
+    const res = await logRequest('GET', Object.assign({ action: 'next' }, keyParams(s)));
+    if (seq !== nextSeq) return;
+    if (!res.ok) {
+      logNotice = { text: res.message || 'The VCID log refused the request.', kind: 'error' };
+    } else if (res.next_start > 9999) {
+      logNotice = { text: 'All unit numbers from 0001 to 9999 have been issued for this prefix, manufacturer, month and model.', kind: 'error' };
+    } else {
+      logNotice = null;
+      $('start').value = res.next_start;
+    }
+  } catch (err) {
+    if (seq !== nextSeq) return;
+    logNotice = { text: 'The VCID log could not be reached. Reserving a batch requires a connection to the VCID log.', kind: 'error' };
+  }
+  update();
+}
+
+// Looks up the start unit number whenever the prefix, manufacturer, month or model changes.
+function scheduleNextStart(s) {
+  const key = JSON.stringify(keyParams(s));
+  if (key === lastKey) return;
+  lastKey = key;
+  clearTimeout(nextTimer);
+  nextTimer = setTimeout(() => loadNextStart(s), 300);
+}
 
 // Reads and checks the batch fields. Returns the settings and a list of problems.
 function readBatch() {
@@ -437,9 +525,77 @@ function idText(list) {
 }
 
 function fileName() {
-  const { s, list } = currentBatch;
+  const list = reserved.list;
   return `${list[0].vcid}-${list[list.length - 1].vcid}.xlsx`;
 }
+
+function setExportStatus(message, kind) {
+  const el = $('export-status');
+  el.textContent = message || '';
+  el.className = 'log-status' + (kind ? ' ' + kind : '');
+}
+
+function showReserved() {
+  const r = reserved.record;
+  $('reserved-title').innerHTML = `Batch <span class="code">${escapeHtml(r.batch_id)}</span> reserved: ` +
+    `<span class="code">${escapeHtml(r.first_id)}</span> – <span class="code">${escapeHtml(r.last_id)}</span>`;
+  $('reserved').hidden = false;
+  $('fallback').hidden = true;
+  setExportStatus('');
+}
+
+// Records the batch in the VCID log. Only a reserved batch can be downloaded, shared or copied.
+async function doReserve() {
+  update();
+  if (!currentBatch || !document.body.classList.contains('ready') || !API_URL || logBusy) return;
+  const { s, list } = currentBatch;
+
+  logBusy = true;
+  $('btn-reserve').disabled = true;
+  setStatus('Checking the VCID log.');
+
+  let res;
+  try {
+    res = await logRequest('POST', Object.assign({ action: 'reserve', name: operatorInfo().name }, keyParams(s),
+      { start: s.start, end: s.start + s.qty - 1 }));
+  } catch (err) {
+    logBusy = false;
+    update();
+    setStatus('The VCID log could not be reached. The batch was not reserved.', 'error');
+    return;
+  }
+  logBusy = false;
+
+  if (!res.ok) {
+    if (res.error === 'overlap') {
+      const c = res.conflict;
+      const when = String(c.timestamp_utc).replace('T', ' ').replace('Z', ' UTC');
+      $('start').value = res.next_start;
+      logNotice = null;
+      update();
+      setStatus(`Not reserved. ${c.first_id} – ${c.last_id} was issued to ${c.name} on ${when}, batch ${c.batch_id}. ` +
+        `The start unit number has been moved to the next unissued number, ${pad(res.next_start, 4)}.`, 'error');
+    } else {
+      update();
+      setStatus(`Not reserved. ${res.message || 'The VCID log refused the request.'}`, 'error');
+    }
+    return;
+  }
+
+  const r = res.record;
+  if (r.first_id !== list[0].vcid || r.last_id !== list[list.length - 1].vcid) {
+    update();
+    setStatus(`The VCID log recorded batch ${r.batch_id} as ${r.first_id} – ${r.last_id}, which does not match this page. Reload the page before using these IDs.`, 'error');
+    return;
+  }
+
+  reserved = { record: r, list };
+  showReserved();
+  $('start').value = res.next_start;
+  logNotice = null;
+  update();
+}
+$('btn-reserve').addEventListener('click', doReserve);
 
 // Enables or disables the buttons and the preview according to the required fields and the batch.
 function update() {
@@ -450,9 +606,10 @@ function update() {
   $('fallback').hidden = true;
 
   const { s, problems } = readBatch();
+  scheduleNextStart(s);
   if (problems.length) {
     currentBatch = null;
-    $('btn-download').disabled = $('btn-copy').disabled = $('btn-share').disabled = true;
+    $('btn-reserve').disabled = true;
     $('preview-wrap').innerHTML = '';
     setStatus(problems.join(' '), 'error');
     return;
@@ -460,8 +617,10 @@ function update() {
 
   const list = buildIds(s);
   currentBatch = { s, list };
-  $('btn-download').disabled = $('btn-copy').disabled = $('btn-share').disabled = !ready;
-  setStatus(`IDs: ${list[0].vcid} – ${list[list.length - 1].vcid}`);
+  $('btn-reserve').disabled = !ready || !API_URL || logBusy;
+  if (!API_URL) setStatus('The VCID log is not configured. Reserving a batch is unavailable until API_URL is set in index.html.', 'error');
+  else if (logNotice) setStatus(logNotice.text, logNotice.kind);
+  else setStatus(`IDs: ${list[0].vcid} – ${list[list.length - 1].vcid}`);
   renderPreview(list, s);
 }
 
@@ -486,12 +645,12 @@ function showFallback(text, message) {
   ta.hidden = false;
   ta.focus();
   ta.select();
-  setStatus(message, 'error');
+  setExportStatus(message, 'error');
 }
 
 function excelReady() {
   if (typeof XLSX !== 'undefined') return true;
-  setStatus('The Excel library could not be loaded. Check the internet connection and reload the page.', 'error');
+  setExportStatus('The Excel library could not be loaded. Check the internet connection and reload the page.', 'error');
   return false;
 }
 
@@ -503,8 +662,8 @@ let downloads = null;
 })();
 
 $('btn-download').addEventListener('click', async () => {
-  if (!currentBatch || !document.body.classList.contains('ready') || !excelReady()) return;
-  const file = buildXlsx(currentBatch.list);
+  if (!reserved || !excelReady()) return;
+  const file = buildXlsx(reserved.list);
   if (!downloads) {
     // Standalone page (for example GitHub Pages): save through a temporary download link.
     try {
@@ -516,20 +675,20 @@ $('btn-download').addEventListener('click', async () => {
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setStatus(`Saved ${fileName()}.`, 'ok');
+      setExportStatus(`Saved ${fileName()}.`, 'ok');
     } catch (err) {
-      showFallback(idText(currentBatch.list), 'The file could not be saved. Copy the IDs below.');
+      showFallback(idText(reserved.list), 'The file could not be saved. Copy the IDs below.');
     }
     return;
   }
   try {
     await downloads.save({ filename: fileName(), data: file });
-    setStatus(`Saved ${fileName()}.`, 'ok');
+    setExportStatus(`Saved ${fileName()}.`, 'ok');
   } catch (err) {
     const code = err && err.code;
-    if (code === 'declined') setStatus('Download cancelled.');
-    else if (code === 'rate_limited') setStatus('A save prompt is already open.', 'error');
-    else showFallback(idText(currentBatch.list), 'The file could not be saved. Copy the IDs below.');
+    if (code === 'declined') setExportStatus('Download cancelled.');
+    else if (code === 'rate_limited') setExportStatus('A save prompt is already open.', 'error');
+    else showFallback(idText(reserved.list), 'The file could not be saved. Copy the IDs below.');
   }
 });
 
@@ -542,24 +701,24 @@ try {
 }
 
 $('btn-share').addEventListener('click', async () => {
-  if (!currentBatch || !document.body.classList.contains('ready') || !excelReady()) return;
-  const file = new File([buildXlsx(currentBatch.list)], fileName(), { type: XLSX_TYPE });
+  if (!reserved || !excelReady()) return;
+  const file = new File([buildXlsx(reserved.list)], fileName(), { type: XLSX_TYPE });
   try {
     await navigator.share({ files: [file], title: fileName() });
-    setStatus('Shared the Excel file.', 'ok');
+    setExportStatus('Shared the Excel file.', 'ok');
   } catch (err) {
-    if (err && err.name === 'AbortError') setStatus('Sharing cancelled.');
-    else setStatus('Sharing is unavailable in this browser. Download the Excel file instead.', 'error');
+    if (err && err.name === 'AbortError') setExportStatus('Sharing cancelled.');
+    else setExportStatus('Sharing is unavailable in this browser. Download the Excel file instead.', 'error');
   }
 });
 
 $('btn-copy').addEventListener('click', () => {
-  if (!currentBatch || !document.body.classList.contains('ready')) return;
-  const text = idText(currentBatch.list);
+  if (!reserved) return;
+  const text = idText(reserved.list);
   const fail = () => showFallback(text, 'Clipboard access is unavailable. The IDs are selected below.');
   try {
     navigator.clipboard.writeText(text).then(
-      () => setStatus('Copied the IDs.', 'ok'),
+      () => setExportStatus('Copied the IDs.', 'ok'),
       fail
     );
   } catch (err) { fail(); }

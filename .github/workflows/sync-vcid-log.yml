@@ -1,0 +1,53 @@
+# Copies the VCID log from the Google Sheet into data/vcid_log.csv.
+# Setup: see README.md, section "VCID log".
+name: Sync VCID log
+
+on:
+  schedule:
+    - cron: "37 */6 * * *" # every 6 hours (UTC)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-vcid-log
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download VCID log
+        env:
+          VCID_LOG_URL: ${{ secrets.VCID_LOG_URL }}
+          VCID_LOG_TOKEN: ${{ secrets.VCID_LOG_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${VCID_LOG_URL}" ] || [ -z "${VCID_LOG_TOKEN}" ]; then
+            echo "::error::Repository secrets VCID_LOG_URL and VCID_LOG_TOKEN must be set."
+            exit 1
+          fi
+          curl -fsSL --retry 3 --get \
+            --data-urlencode "action=csv" \
+            --data-urlencode "token=${VCID_LOG_TOKEN}" \
+            "${VCID_LOG_URL}" -o "${RUNNER_TEMP}/vcid_log.csv"
+
+      - name: Validate VCID log
+        run: python3 scripts/validate_vcid_log.py "${RUNNER_TEMP}/vcid_log.csv"
+
+      - name: Commit changes
+        run: |
+          set -euo pipefail
+          cp "${RUNNER_TEMP}/vcid_log.csv" data/vcid_log.csv
+          if [ -z "$(git status --porcelain -- data/vcid_log.csv)" ]; then
+            echo "The VCID log has not changed."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/vcid_log.csv
+          git commit -m "Sync VCID log"
+          git push
