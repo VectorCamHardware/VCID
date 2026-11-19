@@ -59,7 +59,8 @@
   .field label .range { font-size: 10px; color: #aaa; text-transform: none; letter-spacing: 0; }
 
   .field input,
-  .field select {
+  .field select,
+  .field textarea {
     padding: 6px 8px;
     font-size: 13px;
     border: 1px solid #ccc;
@@ -93,8 +94,11 @@
   /* Locked fields are filled in automatically and cannot be edited */
   .field input[readonly] { background: #eee; color: #555; border-color: #ddd; cursor: default; }
 
+  .field textarea { resize: vertical; min-height: 60px; line-height: 1.4; }
+
   .field input:focus,
-  .field select:focus { outline: 2px solid #4a90e2; outline-offset: 1px; }
+  .field select:focus,
+  .field textarea:focus { outline: 2px solid #4a90e2; outline-offset: 1px; }
   .field input.missing { border-color: #d9534f; }
   .required { color: #d9534f; }
 
@@ -281,6 +285,10 @@
         <span class="suffix" id="qtyPad"></span>
       </div>
     </div>
+    <div class="field">
+      <label for="comments">Comments <span class="range">(optional)</span></label>
+      <textarea id="comments" rows="3" maxlength="500"></textarea>
+    </div>
   </div>
 </div>
 
@@ -387,7 +395,7 @@ $('prefix').addEventListener('change', fillModels);
 const nameEl = $('opname');
 
 function operatorInfo() {
-  return { name: nameEl.value.trim() };
+  return { name: nameEl.value.trim(), comments: $('comments').value.trim() };
 }
 
 function setStatus(message, kind) {
@@ -573,7 +581,7 @@ async function doReserve() {
 
   let res;
   try {
-    res = await logRequest('POST', Object.assign({ action: 'reserve', name: operatorInfo().name }, keyParams(s),
+    res = await logRequest('POST', Object.assign({ action: 'reserve', name: operatorInfo().name, comments: operatorInfo().comments }, keyParams(s),
       { start: s.start, end: s.start + s.qty - 1 }));
   } catch (err) {
     logBusy = false;
@@ -607,6 +615,7 @@ async function doReserve() {
   }
 
   reserved = { record: r, list };
+  $('comments').value = '';
   showReserved();
   $('start').value = res.next_start;
   logNotice = null;
